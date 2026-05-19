@@ -89,7 +89,7 @@ jobs:
               "size": int(size),
               "sha256": sha256,
               "notes": notes,
-              "url": "https://github.com/CHaerem/firmware/releases/download/latest/firmware.bin",
+              "url": "https://github.com/CHaerem/Bruce/releases/download/latest/firmware.bin",
           }, indent=2))
           PY
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
