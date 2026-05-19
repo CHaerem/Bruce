@@ -1,0 +1,29 @@
+# Dual-firmware layout for Cardputer (8 MB flash).
+#
+# clawdputer IS the launcher: it lives in factory and boots by default.
+# ota_0 is the guest slot — when the user opens the Bruce tile (or any
+# future guest firmware), clawdputer streams the .bin from SD into ota_0
+# and flips the boot pointer. The guest runs in PENDING_VERIFY state, so
+# any reboot (power cycle, guest's own restart, long-press G0 inside the
+# guest's patched build) falls back to factory via the bootloader's
+# rollback mechanism — no manual return path needed in the guest.
+#
+# Address math (all 64 KB aligned for the bootloader):
+#   0x09000 + 0x05000 = 0x0E000   (nvs end)
+#   0x0E000 + 0x02000 = 0x10000   (otadata end → factory start)
+#   0x10000 + 0x280000 = 0x290000 (factory end → ota_0 start)
+#   0x290000 + 0x500000 = 0x790000 (ota_0 end → littlefs start)
+#   0x790000 + 0x60000  = 0x7F0000 (littlefs end → coredump start)
+#   0x7F0000 + 0x10000  = 0x800000 (8 MB total)
+#
+# clawdputer fits in 2.5 MB factory with room to grow (currently ~1.9 MB).
+# 5 MB ota_0 matches Bruce's native partition size (4.88 MB), so Bruce
+# rebuilt against this table will fit with negligible squeeze.
+#
+# Name,     Type, SubType,  Offset,   Size,     Flags
+nvs,        data, nvs,      0x9000,   0x5000,
+otadata,    data, ota,      0xE000,   0x2000,
+factory,    app,  factory,  0x10000,  0x280000,
+ota_0,      app,  ota_0,    0x290000, 0x500000,
+littlefs,   data, spiffs,   0x790000, 0x60000,
+coredump,   data, coredump, 0x7F0000, 0x10000,

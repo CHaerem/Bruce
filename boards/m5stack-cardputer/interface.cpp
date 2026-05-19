@@ -5,6 +5,12 @@
 #include <Wire.h>
 #include <interface.h>
 
+// [clawd] Dual-boot return path — esp_ota_set_boot_partition on factory
+// reboots into the clawdputer image. See README in our clawdputer fork
+// for the wider architecture.
+#include <esp_ota_ops.h>
+#include <esp_partition.h>
+
 // Cardputer and 1.1 keyboard
 Keyboard_Class Keyboard;
 // TCA8418 keyboard controller for ADV variant
@@ -153,6 +159,31 @@ void _setBrightness(uint8_t brightval) {
 ** Handles the variables PrevPress, NextPress, SelPress, AnyKeyPress and EscPress
 **********************************************************************/
 void InputHandler(void) {
+    // [clawd patch] Long-press G0 (≥1500 ms) returns to clawdputer in
+    // the factory partition. Mirrors the same gesture clawdputer uses
+    // for "go home", so the device behaves consistently in both
+    // firmwares. Quick G0 presses keep Bruce's existing "Ok/Sel"
+    // semantics — we only fire on sustained hold.
+    {
+        static unsigned long g0_press_start = 0;
+        static bool          g0_held        = false;
+        if (digitalRead(0) == LOW) {
+            if (!g0_held) {
+                g0_held        = true;
+                g0_press_start = millis();
+            } else if (millis() - g0_press_start >= 1500) {
+                const esp_partition_t* factory = esp_partition_find_first(
+                    ESP_PARTITION_TYPE_APP,
+                    ESP_PARTITION_SUBTYPE_APP_FACTORY,
+                    NULL);
+                if (factory) esp_ota_set_boot_partition(factory);
+                esp_restart();
+            }
+        } else {
+            g0_held = false;
+        }
+    }
+
     static unsigned long tm = 0;
 
     static bool sel = false;
