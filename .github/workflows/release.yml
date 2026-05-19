@@ -1,0 +1,120 @@
+name: Build & Release Cardputer
+
+# clawdputer-flavored Bruce fork: every push to main rebuilds the
+# Cardputer firmware and publishes it to the `latest` GitHub release.
+# clawdputer fetches `manifest.json` over HTTPS, compares its stored
+# bruce_installed_sha to manifest.sha, and offers an in-device update
+# when they differ. Same GitOps pattern as clawdputer itself, just a
+# second pipeline owning its own release.
+#
+# Build takes 8-15 min on a cold runner (pioarduino platform install +
+# Bruce sources + huge IDF toolchain). The PIO cache cuts subsequent
+# runs to ~3-5 min.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bruce-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio/packages
+            ~/.platformio/platforms
+            ~/.cache/pip
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}-${{ hashFiles('boards/m5stack-cardputer/m5stack-cardputer.ini') }}
+          restore-keys: |
+            pio-${{ runner.os }}-
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      - name: Build Cardputer firmware
+        run: |
+          pio run -e m5stack-cardputer
+          ls -lh .pio/build/m5stack-cardputer/
+
+      - name: Size check
+        run: |
+          # ota_0 in clawdputer's partitions_dualboot.csv is 5 MB. Anything
+          # larger won't fit in the guest slot and would fail at esp_ota_begin.
+          SIZE=$(stat -c%s .pio/build/m5stack-cardputer/firmware.bin)
+          MAX=5242880
+          printf 'firmware.bin: %s bytes (limit %s)\n' "$SIZE" "$MAX"
+          if [ "$SIZE" -gt "$MAX" ]; then
+            echo "::error::firmware.bin exceeds ota_0 capacity (5 MB)"
+            exit 1
+          fi
+
+      - name: Stage release artifacts
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        id: stage
+        run: |
+          set -euo pipefail
+          SHA=$(git rev-parse --short=7 HEAD)
+          DATE=$(git show -s --format=%cI HEAD | cut -c1-10)
+          NOTES=$(git show -s --format=%s HEAD | tr -d '"' | cut -c1-120)
+          mkdir -p out
+          cp .pio/build/m5stack-cardputer/firmware.bin out/firmware.bin
+          SIZE=$(stat -c%s out/firmware.bin)
+          SHA256=$(sha256sum out/firmware.bin | awk '{print $1}')
+          printf '%s' "$SHA256" > out/firmware.bin.sha256
+          python3 - "$SHA" "$DATE" "$SIZE" "$SHA256" "$NOTES" <<'PY' > out/manifest.json
+          import json, sys
+          sha, date, size, sha256, notes = sys.argv[1:6]
+          print(json.dumps({
+              "schema": 1,
+              "sha": sha,
+              "date": date,
+              "size": int(size),
+              "sha256": sha256,
+              "notes": notes,
+              "url": "https://github.com/CHaerem/firmware/releases/download/latest/firmware.bin",
+          }, indent=2))
+          PY
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
+          ls -lh out
+          cat out/manifest.json
+
+      - name: Publish "latest" release
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "Bruce-clawd build (${{ steps.stage.outputs.sha }})"
+          body: |
+            Bruce fork linked against clawdputer's `partitions_dualboot.csv`.
+            Loaded into clawdputer's `ota_0` guest slot via the in-device
+            Bruce tile, which fetches `manifest.json` from this release.
+
+            Asset                 | Purpose
+            ----------------------|---------------------------------------------
+            `firmware.bin`        | App image (linked to ota_0 at 0x290000)
+            `firmware.bin.sha256` | Hex SHA-256 for download verification
+            `manifest.json`       | sha, date, size, sha256, notes, url
+          files: |
+            out/firmware.bin
+            out/firmware.bin.sha256
+            out/manifest.json
